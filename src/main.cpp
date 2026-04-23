@@ -162,11 +162,11 @@ struct Contest{
     void scroll(){
         if(!frozen){ cout << "[Error]Scroll failed: scoreboard has not been frozen.\n"; return; }
         cout << "[Info]Scroll scoreboard.\n";
-        // before scrolling, flush
-        flush();
-        // output scoreboard before scrolling
-        printScoreboard();
+        // before scrolling, recompute rankings without printing
+        computeRankingSnapshot();
         has_flushed=true;
+        // output scoreboard before scrolling (after flush)
+        printScoreboard();
         // Build ranking order from last flush
         vector<int> order(teams.size()); iota(order.begin(), order.end(), 0);
         sort(order.begin(), order.end(), [&](int a,int b){ return teams[a].ranking < teams[b].ranking; });
