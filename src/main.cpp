@@ -27,6 +27,7 @@ struct Contest{
     bool started=false;
     int duration=0, m=0;
     bool frozen=false; // scoreboard is frozen
+    bool has_flushed=false;
     vector<Team> teams;
     unordered_map<string,int> id; // team name -> index
     vector<vector<Submission>> submits; // per team list of submissions
@@ -109,6 +110,7 @@ struct Contest{
     }
     void flush(){
         computeRankingSnapshot();
+        has_flushed=true;
         cout << "[Info]Flush scoreboard.\n";
     }
     void freeze(){
@@ -126,12 +128,13 @@ struct Contest{
         }
     }
     void printScoreboard(){
-        // scoreboard must show statuses considering freeze flags
-        // Need current ranking order: compute based on last flush snapshot; but printing requires order after current compute?
-        // The spec: when outputting scoreboard during scroll, it says before scrolling, this scoreboard is after flushing.
-        // Generally for print, we should order by current ranking snapshot.
         vector<int> order(teams.size()); iota(order.begin(), order.end(), 0);
-        sort(order.begin(), order.end(), [&](int a,int b){ return teams[a].ranking < teams[b].ranking; });
+        if(!has_flushed){
+            sort(order.begin(), order.end(), [&](int a,int b){ return teams[a].name < teams[b].name; });
+            for(size_t i=0;i<order.size();i++) teams[order[i]].ranking = (int)i+1;
+        }else{
+            sort(order.begin(), order.end(), [&](int a,int b){ return teams[a].ranking < teams[b].ranking; });
+        }
         for(int idx: order){
             auto &t=teams[idx];
             cout << t.name << ' ' << t.ranking << ' ' << t.solved_cnt << ' ' << t.penalty;
@@ -163,6 +166,7 @@ struct Contest{
         flush();
         // output scoreboard before scrolling
         printScoreboard();
+        has_flushed=true;
         // Build list of teams having frozen problems
         // We repeatedly pick the lowest-ranked team with any frozen problems, and unfreeze the smallest problem id among its frozen problems.
         // When unfreezing, apply the post-freeze submissions to update solved status and wrong counts.
