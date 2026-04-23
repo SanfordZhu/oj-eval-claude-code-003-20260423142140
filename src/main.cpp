@@ -167,98 +167,73 @@ struct Contest{
         // output scoreboard before scrolling
         printScoreboard();
         has_flushed=true;
-        // Build list of teams having frozen problems
-        // We repeatedly pick the lowest-ranked team with any frozen problems, and unfreeze the smallest problem id among its frozen problems.
-        // When unfreezing, apply the post-freeze submissions to update solved status and wrong counts.
-        auto cmpRank=[&](int a,int b){ return teams[a].ranking > teams[b].ranking; }; // lower ranked = larger ranking number
-        vector<int> hasFrozen;
-        for(size_t i=0;i<teams.size();i++){
-            bool any=false;
-            for(int j=0;j<m;j++) if(teams[i].p[j].frozen && !teams[i].p[j].solved) { any=true; break; }
-            if(any) hasFrozen.push_back((int)i);
-        }
-        auto update_after_unfreeze = [&](int tid, int pid){
-            auto &pi = teams[tid].p[pid];
-            // Apply submissions after freeze to this problem: we must iterate the submission log for this team & problem after the time of freeze. However, we didn't record freeze time.
-            // Simplification: we already counted frozen_after as number of submissions after freeze. For correctness ranking, we need to know if an Accepted occurred post-freeze; if so, treat wrong_before remains frozen_wrong, solved becomes true at time of that first post-freeze Accepted submission time.
-            // We need the time of first AC after freeze; we don't track freeze time, but we can deduce by scanning submits list and tracking a flag when the problem entered frozen.
-            // We'll infer: after freeze, we set pi.frozen=true upon first post-freeze submit to an unsolved problem. But if no submission after freeze, it wouldn't be frozen according to spec? Spec: Problems with at least one submission after freezing will enter a frozen state. So our implementation marks frozen on first post-freeze submit.
-            // For scrolling, only frozen problems are considered; thus we only unfreeze those.
-            // Now, during unfreeze, determine if any post-freeze submission had Accepted; if yes, set solved with time at that Accepted; wrong_before should be pi.frozen_wrong plus the number of post-freeze wrongs before that AC; which equals (pi.frozen_after - countAfterIncludingAC) before AC. We'll recompute by scanning submissions.
-            int wrong_after_before_ac = 0; int ac_time = 0; bool got_ac=false;
-            for(const auto &s: submits[tid]){
-                if(s.prob!=pid) continue;
-                // Treat only submissions that occurred while frozen for this problem: we don't track timestamps of freeze. Assume all counted in frozen_after are post-freeze; but we cannot map which ones; so scan logically: once pi.frozen was set, subsequent submits incremented frozen_after. We didn't persist the moment; but we can reconstruct by walking and simulating using a flag that turns on when we would have set frozen in live logic. However we don't have that event sequence snapshot here.
+        // Build ranking order from last flush
+        vector<int> order(teams.size()); iota(order.begin(), order.end(), 0);
+        sort(order.begin(), order.end(), [&](int a,int b){ return teams[a].ranking < teams[b].ranking; });
+        auto outranks = [&](int A,int B){
+            const Team &tA=teams[A], &tB=teams[B];
+            if(tA.solved_cnt!=tB.solved_cnt) return tA.solved_cnt>tB.solved_cnt;
+            if(tA.penalty!=tB.penalty) return tA.penalty<tB.penalty;
+            size_t na=tA.solve_times.size(), nb=tB.solve_times.size();
+            size_t mn=max(na, nb);
+            for(size_t i=0;i<mn;i++){
+                int va = (i<na? tA.solve_times[i]: INT_MIN);
+                int vb = (i<nb? tB.solve_times[i]: INT_MIN);
+                if(va!=vb) return va<vb;
             }
-            // Given limited time, we approximate: if frozen_after>0, and among those post-freeze submissions there was an Accepted, mark solved at the last submission time where status Accepted for this team/problem; wrong_before = pi.frozen_wrong + (count of post-freeze non-AC before first AC).
-            // We'll recompute by scanning the entire submission list and considering events after the first time we incremented frozen_after. Need that time index. We'll track per problem a counter to detect first post-freeze submit index; but we didn't store it. To fix, we must store freeze_event index per problem when we first marked frozen. Let's add a field in ProbInfo: int froze_event_index=-1; and when we mark frozen, set to submits[tid].size() (after push) meaning index of this event (last).
+            return tA.name < tB.name;
         };
-        // We realize we need froze_event_index; we will recompute now by scanning submits and setting this value retroactively based on current counters; but exact reconstruction is complex. Instead, we shall maintain it during SUBMIT from now on. For prior accumulated state, it's okay.
-        // Proceed with iterative unfreezing until none left
         while(true){
-            hasFrozen.clear();
-            for(size_t i=0;i<teams.size();i++){
-                bool any=false; for(int j=0;j<m;j++) if(teams[i].p[j].frozen && !teams[i].p[j].solved) { any=true; break; }
-                if(any) hasFrozen.push_back((int)i);
+            // find lowest-ranked team with frozen problems
+            int tid=-1;
+            for(int i=(int)order.size()-1;i>=0;i--){
+                int u=order[i]; bool any=false;
+                for(int j=0;j<m;j++) if(teams[u].p[j].frozen && !teams[u].p[j].solved){ any=true; break; }
+                if(any){ tid=u; break; }
             }
-            if(hasFrozen.empty()) break;
-            sort(hasFrozen.begin(), hasFrozen.end(), cmpRank);
-            int tid = hasFrozen.front();
-            int pid = -1; for(int j=0;j<m;j++) if(teams[tid].p[j].frozen && !teams[tid].p[j].solved){ pid=j; break; }
-            // Unfreeze this problem
+            if(tid==-1) break;
+            // smallest problem id among frozen
+            int pid=-1; for(int j=0;j<m;j++) if(teams[tid].p[j].frozen && !teams[tid].p[j].solved){ pid=j; break; }
             auto &pi = teams[tid].p[pid];
-            // Apply post-freeze submissions to determine final state
-            int wrong_after_before_ac=0; int ac_time=0; bool got_ac=false;
-            // Determine first post-freeze submission index by replaying team submits to find when pi.frozen_after first incremented for pid.
-            int seen_frozen_after=0; bool after_freeze=false;
-            for(const auto &s: submits[tid]){
-                if(s.prob!=pid) continue;
-                // Decide if this s happened after freeze for this problem: we can't from time. Use counting: once after_freeze becomes true, we count against post-freeze.
-                if(!after_freeze){
-                    // heuristics: the first occurrence contributing to frozen_after existed; detect by comparing seen_frozen_after to pi.frozen_after after counting; we can't know from here; fallback: assume the last pi.frozen_after submissions are the post-freeze ones; iterate from end.
-                }
-            }
-            // Simpler approach: walk submissions for this team/problem from end, count pi.frozen_after entries as post-freeze; among those, find earliest AC from the tail reversed. Build a vector of those last k submissions.
-            vector<Submission> post;
-            int k = pi.frozen_after;
-            for(int i=(int)submits[tid].size()-1;i>=0 && (int)post.size()<k;i--){
-                if(submits[tid][i].prob==pid) post.push_back(submits[tid][i]);
-            }
+            // gather post-freeze submissions
+            vector<Submission> post; int k=pi.frozen_after;
+            for(int i=(int)submits[tid].size()-1;i>=0 && (int)post.size()<k;i--) if(submits[tid][i].prob==pid) post.push_back(submits[tid][i]);
             reverse(post.begin(), post.end());
+            int wrong_after_before_ac=0; int ac_time=0; bool got_ac=false;
             for(const auto &s: post){
                 if(!got_ac){
                     if(s.status==ACC){ got_ac=true; ac_time=s.time; }
                     else wrong_after_before_ac++;
                 }
             }
+            // apply
+            pi.wrong_before = pi.frozen_wrong + wrong_after_before_ac;
             if(got_ac){
-                pi.solved=true; pi.solve_time=ac_time; pi.wrong_before = pi.frozen_wrong + wrong_after_before_ac;
+                pi.solved=true; pi.solve_time=ac_time;
+                teams[tid].solved_cnt++;
+                teams[tid].penalty += 20LL*pi.wrong_before + pi.solve_time;
+                teams[tid].solve_times.push_back(pi.solve_time);
+                sort(teams[tid].solve_times.begin(), teams[tid].solve_times.end(), greater<int>());
             }
-            // Now unfreeze the flag
             pi.frozen=false; pi.frozen_after=0; pi.frozen_wrong=0;
-            // Recompute ranking; if a team's ranking increased, output change line(s). We need to capture previous ordering and compare after recompute.
-            vector<pair<int,int>> prevOrder; // (team id, ranking)
-            for(auto &t: teams) prevOrder.push_back({id[t.name], t.ranking});
-            computeRankingSnapshot();
-            // Determine if tid's ranking improved; if yes, repeatedly output each swap step? Spec: output each unfreeze that causes a ranking change, one per line, with team_name1 team_name2 solved_number penalty_time where team_name2 is the team replaced by team_name1.
-            // We'll output one line per jump: for each position the team moved up, emit a line with the team bumped.
-            int oldRank=0; for(auto &pr: prevOrder) if(pr.first==tid){ oldRank=pr.second; break; }
-            int newRank = teams[tid].ranking;
-            if(newRank<oldRank){
-                // For each position p from oldRank-1 down to newRank, find team currently at p, output change
-                // Build name->id map of prev order by rank
-                vector<int> prevByRank(teams.size()+1,-1);
-                for(auto &pr: prevOrder) prevByRank[pr.second]=pr.first;
-                for(int p=oldRank-1; p>=newRank; --p){
-                    int replacedId = prevByRank[p];
-                    cout << teams[tid].name << ' ' << teams[replacedId].name << ' ' << teams[tid].solved_cnt << ' ' << teams[tid].penalty << "\n";
-                }
+            // bubble up tid
+            int pos = find(order.begin(), order.end(), tid) - order.begin();
+            int oldRank = pos+1;
+            while(pos>0 && outranks(tid, order[pos-1])){
+                int replacedId = order[pos-1];
+                cout << teams[tid].name << ' ' << teams[replacedId].name << ' ' << teams[tid].solved_cnt << ' ' << teams[tid].penalty << "\n";
+                swap(order[pos], order[pos-1]);
+                pos--;
             }
+            // refresh rankings in affected range
+            for(int i=pos;i<=oldRank-1;i++) teams[order[i]].ranking = i+1;
         }
         // After scrolling ends, lift freeze
         frozen=false;
         // Output scoreboard after scrolling
-        flush();
+        // Update rankings fully consistent
+        for(size_t i=0;i<order.size();i++) teams[order[i]].ranking = (int)i+1;
+        cout.flush();
         printScoreboard();
     }
     void queryRanking(const string& nm){
