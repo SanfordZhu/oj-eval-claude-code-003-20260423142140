@@ -265,8 +265,14 @@ struct Contest{
         auto it=id.find(nm); if(it==id.end()){ cout << "[Error]Query ranking failed: cannot find the team.\n"; return; }
         cout << "[Info]Complete query ranking.\n";
         if(frozen){ cout << "[Warning]Scoreboard is frozen. The ranking may be inaccurate until it were scrolled.\n"; }
-        // ranking after last flush
-        cout << nm << " NOW AT RANKING " << teams[it->second].ranking << "\n";
+        int rank;
+        if(has_flushed){ rank = teams[it->second].ranking; }
+        else{
+            vector<int> order(teams.size()); iota(order.begin(), order.end(), 0);
+            sort(order.begin(), order.end(), [&](int a,int b){ return teams[a].name < teams[b].name; });
+            rank = 0; for(size_t i=0;i<order.size();i++) if(order[i]==it->second){ rank=(int)i+1; break; }
+        }
+        cout << nm << " NOW AT RANKING " << rank << "\n";
     }
     void querySubmission(const string& nm, const string& prob, const string& st){
         auto it=id.find(nm); if(it==id.end()){ cout << "[Error]Query submission failed: cannot find the team.\n"; return; }
@@ -296,7 +302,7 @@ int main(){
     while(cin>>cmd){
         if(cmd=="ADDTEAM"){ string nm; cin>>nm; C.addTeam(nm); }
         else if(cmd=="START"){ string DURATION, PROBLEM; int dur, pc; cin>>DURATION>>dur>>PROBLEM>>pc; C.start(dur, pc); }
-        else if(cmd=="SUBMIT"){ char prob; string BY, team, WITH, st; int AT, tm; cin>>prob>>BY>>team>>WITH>>st>>AT>>tm; C.submit(prob, team, st, tm); }
+        else if(cmd=="SUBMIT"){ char prob; string BY, team, WITH, st, ATKW; int tm; cin>>prob>>BY>>team>>WITH>>st>>ATKW>>tm; C.submit(prob, team, st, tm); }
         else if(cmd=="FLUSH"){ C.flush(); }
         else if(cmd=="FREEZE"){ C.freeze(); }
         else if(cmd=="SCROLL"){ C.scroll(); }
